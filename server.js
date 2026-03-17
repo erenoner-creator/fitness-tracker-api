@@ -34,6 +34,7 @@ const deleteWorkoutLimiter = createRateLimiter('workouts-delete');
 const healthLimiter = createRateLimiter('health');
 const docsLimiter = createRateLimiter('docs');
 const commentsLimiter = createRateLimiter('comments');  // For comment endpoints
+const tokenLimiter = createRateLimiter('token');  // Separate from signinLimiter
 
 // Helper to attach exercises to workout sessions (for multi-exercise mixture support)
 // Used in GET endpoints; N+1 query but small scale; could optimize with JOIN
@@ -302,7 +303,7 @@ app.post('/signin', signinLimiter, (req, res) => {
  *       429:
  *         description: Too many requests (rate limit exceeded)
  */
-app.post('/workouts', createWorkoutLimiter, authenticateToken, async (req, res) => {
+app.post('/workouts', authenticateToken, createWorkoutLimiter, async (req, res) => {
   const { date, notes = '', exercises = [] } = req.body;  // exercises: array for mixture; legacy type/duration/calories deprecated
   const userId = req.user.id;
   const cacheKey = `workouts:user:${userId}`;
@@ -410,7 +411,7 @@ app.post('/workouts', createWorkoutLimiter, authenticateToken, async (req, res) 
  *       429:
  *         description: Too many requests (rate limit exceeded)
  */
-app.get('/workouts', listWorkoutsLimiter, authenticateToken, async (req, res) => {
+app.get('/workouts', authenticateToken, listWorkoutsLimiter, async (req, res) => {
   const userId = req.user.id;
 
   // Parse pagination params (defaults: page=1, limit=10; max limit=100 for perf)
@@ -441,7 +442,7 @@ app.get('/workouts', listWorkoutsLimiter, authenticateToken, async (req, res) =>
       const totalPages = Math.ceil(total / limit);
 
       db.all(
-        'SELECT * FROM workouts WHERE user_id = ? ORDER BY date DESC, id DESC LIMIT ? OFFSET ?',
+        'SELECT id, user_id, date, notes FROM workouts WHERE user_id = ? ORDER BY date DESC, id DESC LIMIT ? OFFSET ?',
         [userId, limit, offset],
         async (err, rows) => {
           if (err) return res.status(500).json({ error: err.message });
@@ -473,7 +474,7 @@ app.get('/workouts', listWorkoutsLimiter, authenticateToken, async (req, res) =>
       const total = countResult.total;
       const totalPages = Math.ceil(total / limit);
       db.all(
-        'SELECT * FROM workouts WHERE user_id = ? ORDER BY date DESC, id DESC LIMIT ? OFFSET ?',
+        'SELECT id, user_id, date, notes FROM workouts WHERE user_id = ? ORDER BY date DESC, id DESC LIMIT ? OFFSET ?',
         [userId, limit, offset],
         (err, rows) => {
           if (err) return res.status(500).json({ error: err.message });
@@ -524,14 +525,14 @@ app.get('/workouts', listWorkoutsLimiter, authenticateToken, async (req, res) =>
  *       429:
  *         description: Too many requests (rate limit exceeded)
  */
-app.get('/workouts/:id', getWorkoutLimiter, authenticateToken, (req, res) => {
+app.get('/workouts/:id', authenticateToken, getWorkoutLimiter, (req, res) => {
   const { id } = req.params;
   const userId = req.user.id;
 
   // Check access: user own or admin
-  const checkQuery = req.user.role === 'admin' 
-    ? 'SELECT * FROM workouts WHERE id = ?'
-    : 'SELECT * FROM workouts WHERE id = ? AND user_id = ?';
+  const checkQuery = req.user.role === 'admin'
+    ? 'SELECT id, user_id, date, notes FROM workouts WHERE id = ?'
+    : 'SELECT id, user_id, date, notes FROM workouts WHERE id = ? AND user_id = ?';
   const checkParams = req.user.role === 'admin' ? [id] : [id, userId];
 
   db.get(checkQuery, checkParams, (err, row) => {
@@ -582,7 +583,7 @@ app.get('/workouts/:id', getWorkoutLimiter, authenticateToken, (req, res) => {
  *       429:
  *         description: Too many requests (rate limit exceeded)
  */
-app.put('/workouts/:id', updateWorkoutLimiter, authenticateToken, async (req, res) => {
+app.put('/workouts/:id', authenticateToken, updateWorkoutLimiter, async (req, res) => {
   const { id } = req.params;
   const { date, notes = '', exercises = [] } = req.body;  // Full updateable: session + exercises array
   const userId = req.user.id;
@@ -687,7 +688,7 @@ app.put('/workouts/:id', updateWorkoutLimiter, authenticateToken, async (req, re
  *       429:
  *         description: Too many requests (rate limit exceeded)
  */
-app.delete('/workouts/:id', deleteWorkoutLimiter, authenticateToken, async (req, res) => {
+app.delete('/workouts/:id', authenticateToken, deleteWorkoutLimiter, async (req, res) => {
   const { id } = req.params;
   const userId = req.user.id;
   const cacheKey = `workouts:user:${userId}`;
@@ -777,7 +778,7 @@ app.delete('/workouts/:id', deleteWorkoutLimiter, authenticateToken, async (req,
  *       429:
  *         description: Too many requests (rate limit exceeded)
  */
-app.post('/workouts/:id/comments', commentsLimiter, authenticateToken, (req, res) => {
+app.post('/workouts/:id/comments', authenticateToken, commentsLimiter, (req, res) => {
   const { id } = req.params;
   const { text } = req.body;
   const userId = req.user.id;
@@ -813,7 +814,7 @@ app.post('/workouts/:id/comments', commentsLimiter, authenticateToken, (req, res
   });
 });
 
-app.get('/workouts/:id/comments', commentsLimiter, authenticateToken, (req, res) => {
+app.get('/workouts/:id/comments', authenticateToken, commentsLimiter, (req, res) => {
   const { id } = req.params;
   const userId = req.user.id;
 
@@ -908,7 +909,7 @@ app.get('/admin/workouts', authenticateToken, requireAdmin, listWorkoutsLimiter,
 
     // Paginated select, ordered recent first
     db.all(
-      'SELECT * FROM workouts ORDER BY date DESC, id DESC LIMIT ? OFFSET ?',
+      'SELECT id, user_id, date, notes FROM workouts ORDER BY date DESC, id DESC LIMIT ? OFFSET ?',
       [limit, offset],
       (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -977,7 +978,7 @@ app.get('/admin/users', authenticateToken, requireAdmin, signupLimiter, (req, re
  *       429:
  *         description: Too many requests (rate limit exceeded)
  */
-app.post('/token', signinLimiter, (req, res) => {
+app.post('/token', tokenLimiter, (req, res) => {
   // Alias to /signin for testing convenience in Postman; reuses secure logic
   const { email, password } = req.body;
   if (!email || !password) {
